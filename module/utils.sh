@@ -1,5 +1,12 @@
 #!/bin/bash
 # shellcheck disable=SC2154
+# X64 PORT NOTE (rami01e fork):
+#  - Added brene_susfs_ready(): a cheap probe that only succeeds when the
+#    susfs CLI can actually talk to a susfs kernel implementation (in-kernel
+#    susfs or the susfs_guard_lkm loadable module).
+#  - All susfs-dependent helpers now no-op quietly when the kernel interface
+#    is not up (x86_64 emulators before/without the LKM), instead of
+#    spamming "no supercall answer" errors on every boot.
 PATH=/data/adb/ksu/bin:$PATH
 MODDIR=${0%/*}
 KSU_BIN=/data/adb/ksud
@@ -8,7 +15,19 @@ SUSFS_BIN=/data/adb/ksu/bin/susfs
 PERSISTENT_DIR=/data/adb/brene
 DEST_BIN_DIR=/data/adb/ksu/bin
 
-## brene_clone_perm <file/or/dir/perm/to/be/changed> <file/or/dir/to/clone/from>
+## brene_susfs_ready
+## Returns 0 only if the susfs CLI answers with a susfs v2.x version,
+## i.e. there is a live susfs kernel implementation to talk to.
+brene_susfs_ready() {
+	local v
+	v=$(${SUSFS_BIN} show version 2>/dev/null)
+	case "${v}" in
+	v2*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+## brene_clone_perm
 brene_clone_perm() {
 	# Always use busybox to maintain consistency
 	TO=$1
@@ -191,26 +210,31 @@ update_config_date() {
 }
 
 brene_sus_path() {
+	brene_susfs_ready || return 0
 	if ${SUSFS_BIN} add_sus_path "$1" && [[ "${config_brene_logs}" == "1" ]]; then
 		echo "[sus_path]: $1" >> "${PERSISTENT_DIR}/logs.txt"
 	fi
 }
 brene_sus_path_loop() {
+	brene_susfs_ready || return 0
 	if ${SUSFS_BIN} add_sus_path_loop "$1" && [[ "${config_brene_logs}" == "1" ]]; then
 		echo "[sus_path_loop]: $1" >> "${PERSISTENT_DIR}/logs.txt"
 	fi
 }
 brene_sus_map() {
+	brene_susfs_ready || return 0
 	if ${SUSFS_BIN} add_sus_map "$1" && [[ "${config_brene_logs}" == "1" ]]; then
 		echo "[sus_map]: $1" >> "${PERSISTENT_DIR}/logs.txt"
 	fi
 }
 brene_set_uname() {
+	brene_susfs_ready || return 0
 	if ${SUSFS_BIN} set_uname "$1" "$2" && [[ "${config_brene_logs}" == "1" ]]; then
 		echo "[set_uname]: $1 $2" >> "${PERSISTENT_DIR}/logs.txt"
 	fi
 }
 brene_open_redirect() {
+	brene_susfs_ready || return 0
 	brene_clone_perm "$2" "$1"
 	if ${SUSFS_BIN} add_open_redirect "$1" "$2" "$3" && [[ "${config_brene_logs}" == "1" ]]; then
 		echo "[open_redirect]: $1 $2 $3" >> "${PERSISTENT_DIR}/logs.txt"
@@ -218,5 +242,5 @@ brene_open_redirect() {
 }
 brene_kernel_umount() {
 	${KSU_BIN} kernel notify-module-mounted
-	${KSU_BIN} kernel umount add -f 2 "$1" 2> /dev/null
+	${KSU_BIN} kernel umount add -f 2 "$1" 2>/dev/null
 }

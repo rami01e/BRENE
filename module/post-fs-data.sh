@@ -1,5 +1,14 @@
 #!/bin/bash
 # shellcheck disable=SC2154
+# X64 PORT NOTE (rami01e fork):
+#  - On x86_64 emulators (MuMu 6 / Android 15) the susfs kernel side is the
+#    susfs_guard_lkm loadable kernel module. Its loader module normally runs
+#    AFTER this module (module ids: "brene" < "susfs_lkm_mumu"), so the susfs
+#    interface would not exist yet while our susfs commands run. We therefore
+#    trigger the LKM loader from here (it is idempotent) before issuing any
+#    susfs command.
+#  - The susfs binary restore step no longer clobbers a susfs CLI that is
+#    already answering (e.g. the supercall CLI installed by the LKM module).
 MODDIR=${0%/*}
 KSU_BIN=/data/adb/ksud
 KSU_MODULES_DIR=/data/adb/modules
@@ -7,17 +16,42 @@ SUSFS_BIN=/data/adb/ksu/bin/susfs
 PERSISTENT_DIR=/data/adb/brene
 DEST_BIN_DIR=/data/adb/ksu/bin
 CUSTOM_ROM_NAMES="lineage|infinity|evolution|crdroid|mistos|axion|pixelos|rising|lunaris|halcyon|havoc|alphadroid|bliss|calyx|derpfest|graphene|lmodroid|lumine|matrixx|clover|yaap|aospa"
-SUSFS_VARIANT=$(${SUSFS_BIN} show variant)
 
 # Load utils
 [[ -e "${MODDIR}/utils.sh" ]] && source "${MODDIR}/utils.sh"
 # Load config
 [[ -e "${PERSISTENT_DIR}/config.sh" ]] && source "${PERSISTENT_DIR}/config.sh"
 
-# Restore SuSFS binary
-cp -pf "${PERSISTENT_DIR}/susfs" "${DEST_BIN_DIR}"
+# Restore SuSFS binary, but never clobber a susfs CLI that already answers
+# with a v2.x version: on x64 the live CLI may be the supercall CLI provided
+# by the susfs LKM loader module, which is the one that works there.
+_susfs_current_version=$("${SUSFS_BIN}" show version 2>/dev/null)
+case "${_susfs_current_version}" in
+	v2*) : ;;
+	*)
+		if [[ -f "${PERSISTENT_DIR}/susfs" ]]; then
+			cp -pf "${PERSISTENT_DIR}/susfs" "${DEST_BIN_DIR}"
+		fi
+		;;
+esac
 ln -sf "${DEST_BIN_DIR}/susfs" "${DEST_BIN_DIR}/sus"       # For development
 ln -sf "${DEST_BIN_DIR}/susfs" "${DEST_BIN_DIR}/ksu_susfs" # For compatibility
+
+# Make sure the susfs kernel interface is up before we use it.
+# In-kernel susfs (arm64 phones): nothing to do, the CLI talks to the kernel
+# directly. LKM-based susfs (x86_64 emulators): load the LKM now if its
+# /proc control nodes are not up yet. The loader scripts are idempotent.
+if [[ ! -e /proc/susfs_path ]] && ! brene_susfs_ready; then
+	for _susfs_lkm_mod in \
+		"${KSU_MODULES_DIR}/susfs_lkm_mumu" \
+		"${KSU_MODULES_DIR}/susfs_guard_lkm" \
+		"${KSU_MODULES_DIR}/susfs_lkm_x64"; do
+		if [[ -f "${_susfs_lkm_mod}/post-fs-data.sh" ]]; then
+			sh "${_susfs_lkm_mod}/post-fs-data.sh"
+		fi
+		[[ -e /proc/susfs_path ]] && break
+	done
+fi
 
 # Clear logs
 true > "${PERSISTENT_DIR}/log.txt"
@@ -31,7 +65,7 @@ true > "${PERSISTENT_DIR}/logs.txt"
 #### Spoof the stat of file/directory dynamically, effective only for processes that are marked umounted with uid >= 10000 ####
 ## Important Note:
 ##  - It is stronly suggested to use dynamically if the target path will be mounted
-# cat <<EOF >/dev/null
+# cat </dev/null
 # # First, clone the permission before adding to sus_kstat
 # brene_clone_perm "$MODDIR/hosts" /system/etc/hosts
 
@@ -52,10 +86,10 @@ true > "${PERSISTENT_DIR}/logs.txt"
 #### Spoof the stat of file/directory statically, effective only for processes that are marked umounted with uid >= 10000 ####
 ## Important Note:
 ##  - It is suggested to use statically if you don't need to mount anything but simply change the stat of a target path
-# cat <<EOF >/dev/null
-# Usage: ksu_susfs add_sus_kstat_statically </path/of/file_or_directory> \
-#                         <ino> <dev> <nlink> <size> <atime> <atime_nsec> <mtime> <mtime_nsec> <ctime> <ctime_nsec> \
-#                         <blocks> <blksize>
+# cat </dev/null
+# Usage: ksu_susfs add_sus_kstat_statically  \
+#                                   \
+#
 # ${SUSFS_BIN} add_sus_kstat_statically '/system/framework/services.jar' 'default' 'default' 'default' 'default' '1230768000' '0' '1230768000' '0' '1230768000' '0' 'default' 'default'
 # EOF
 
@@ -66,13 +100,13 @@ true > "${PERSISTENT_DIR}/logs.txt"
 ## Set the permission of the redirected path first ##
 # brene_clone_perm '/data/local/tmp/my_hosts' '/system/etc/hosts'
 ## Now add the target path and redirected path with pre-defined uid scheme to kernel ##
-## *Run 'ksu_susfs add_open_redirect' for more details of <uid_scheme> ##
+## *Run 'ksu_susfs add_open_redirect' for more details of  ##
 # ${SUSFS_BIN} add_open_redirect '/system/etc/hosts' '/data/local/tmp/my_hosts' '0'
 
 #### Spoof /proc/cmdline or /proc/bootconfig, effective for all processes ####
 # No root process detects it for now, and this spoofing won't help much actually #
 # /proc/bootconfig #
-# cat <<EOF >/dev/null
+# cat </dev/null
 # FAKE_BOOTCONFIG=${MODDIR}/fake_bootconfig.txt
 # cat /proc/bootconfig > ./fake_bootconfig.txt
 # sed -i 's/^androidboot.bootreason.*$/androidboot.bootreason = "reboot"/g' ${FAKE_BOOTCONFIG}
@@ -84,7 +118,7 @@ true > "${PERSISTENT_DIR}/logs.txt"
 # EOF
 
 # /proc/cmdline #
-# cat <<EOF >/dev/null
+# cat </dev/null
 # FAKE_PROC_CMDLINE_FILE=${MODDIR}/fake_proc_cmdline.txt
 # cat /proc/cmdline > ${FAKE_PROC_CMDLINE_FILE}
 # sed -i 's/androidboot.verifiedbootstate=orange/androidboot.verifiedbootstate=green/g' ${FAKE_PROC_CMDLINE_FILE}
@@ -104,7 +138,7 @@ if [[ "${config_spoof_cmdline_or_bootconfig}" == "1" ]]; then
 	fi
 fi
 
-#### Enable avc log spoofing to bypass 'su' domain detection via /proc/<pid> enumeration, effective for all processes ####
+#### Enable avc log spoofing to bypass 'su' domain detection via /proc/ enumeration, effective for all processes ####
 ## disable it when users want to do some debugging with the permission issue or selinux issue ##
 #ksu_susfs enable_avc_log_spoofing 0
 if [[ "${config_enable_avc_log_spoofing}" == "1" ]]; then
@@ -137,8 +171,15 @@ if [[ "${config_spoof_uname}" == "1" ]]; then
 	uname_kernel_version="#1 SMP PREEMPT $(resetprop ro.build.date | tr -s ' ')"
 
 	if [[ "${SUSFS_VARIANT}" == "GKI" ]]; then
-		kmi=$(${KSU_BIN} boot-info current-kmi | cut -d'-' -f1)
-		uname_kernel_release="${kernel_version}-${kmi}-$(shuf -i 1-9 -n 1)-g$(shuf -i 10000000-99999999 -n 1)-ab$(shuf -i 10000000-99999999 -n 1)" # e.g., "6.1.145-android14-9-g00000000-ab00000000"
+		# Some x64 emulators' ksud has no boot-info current-kmi (e.g. MuMu),
+		# fall back to the non-GKI style release string when the KMI lookup
+		# does not answer.
+		kmi=$(${KSU_BIN} boot-info current-kmi 2>/dev/null | cut -d'-' -f1)
+		if [[ -n "${kmi}" ]]; then
+			uname_kernel_release="${kernel_version}-${kmi}-$(shuf -i 1-9 -n 1)-g$(shuf -i 10000000-99999999 -n 1)-ab$(shuf -i 10000000-99999999 -n 1)" # e.g., "6.1.145-android14-9-g00000000-ab00000000"
+		else
+			uname_kernel_release="${kernel_version}-g$(shuf -i 10000000-99999999 -n 1)" # e.g., "4.9.145-g00000000"
+		fi
 
 		brene_set_uname "${uname_kernel_release}" "${uname_kernel_version}"
 	else
@@ -232,9 +273,9 @@ if [[ "${config_spoof_hosts}" == "1" ]]; then
 
 	brene_open_redirect "${path}" "${fake_file_path}" '3'
 
-	# add_sus_kstat_statically </path/of/file_or_directory> <ino> <dev> <nlink> <size> <atime> <atime_nsec> <mtime> <mtime_nsec> <ctime> <ctime_nsec> <blocks> <blksize>
+	# add_sus_kstat_statically
 	# ino -> %i, dev -> %d, nlink -> %h, atime -> %X, mtime -> %Y, ctime -> %Z, size -> %s, blocks -> %b, blksize -> %B
-	# Example: stat -c %i <path>
+	# Example: stat -c %i
 	${SUSFS_BIN} add_sus_kstat_statically "${path}" '100' 'default' 'default' '56' 'default' 'default' 'default' 'default' 'default' 'default' '1' '4096'
 fi
 
