@@ -1,0 +1,262 @@
+name: Build BRENE x64 module and MuMu SuSFS LKM
+
+# Builds, entirely on GitHub (no local compilation):
+#
+#  1. susfs-cli       - the classic susfs userspace CLI from simonpunk's
+#                       susfs4ksu (gki-android15-6.6 branch) cross-built with
+#                       the Android NDK for arm64-v8a AND x86_64. The x86_64
+#                       binary becomes module/tools/susfs_x64 in the packaged
+#                       BRENE module zip. (The committed module/tools/susfs
+#                       arm64 binary from upstream BRENE is kept as-is.)
+#  2. susfs-lkm-mumu  - the susfs_guard_lkm loadable kernel module
+#                       (inforcqb/susfs4ksu-for-lkm, vendored in vendor/)
+#                       compiled for x86_64 against the android14-6.1 GKI
+#                       tree at 6.1.90 with the EXACT config extracted from
+#                       the MuMu 6 Android 15 kernel
+#                       (kernel-config/mumu_android15_6.1.90.config), and
+#                       packaged into a flashable KSU module zip together
+#                       with the x86_64 supercall CLI (vendor/susfs_cli_x64).
+#  3. brene-module    - assembles the flashable BRENE module zip with the
+#                       freshly built x86_64 CLI inside.
+#
+# Everything is uploaded as artifacts; tag pushes additionally create a
+# GitHub release with all zips.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  KERNEL_REPO: https://android.googlesource.com/kernel/common
+  KERNEL_BRANCH: android14-6.1
+  KERNEL_VERSION: 6.1.90
+
+jobs:
+  susfs-cli:
+    name: Build susfs userspace CLI (arm64 + x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Clone susfs4ksu userspace tool source
+        run: |
+          git clone --depth 1 -b gki-android15-6.6 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+          echo "susfs4ksu userspace tree:"
+          ls susfs4ksu/ksu_susfs/jni
+
+      - name: Build ksu_susfs for arm64-v8a and x86_64
+        run: |
+          export ANDROID_NDK_HOME="${{ steps.ndk.outputs.ndk-path }}"
+          export PATH="$ANDROID_NDK_HOME:$PATH"
+          cd susfs4ksu/ksu_susfs
+          # Widen the ABI list; keep whatever else Application.mk sets.
+          if grep -q '^APP_ABI' jni/Application.mk; then
+            sed -i 's/^APP_ABI.*/APP_ABI := arm64-v8a x86_64/' jni/Application.mk
+          else
+            echo 'APP_ABI := arm64-v8a x86_64' >> jni/Application.mk
+          fi
+          echo "--- Application.mk ---"
+          cat jni/Application.mk
+          rm -rf libs obj
+          ndk-build -j"$(nproc)"
+          file libs/arm64-v8a/ksu_susfs
+          file libs/x86_64/ksu_susfs
+
+      - name: Stage binaries
+        run: |
+          mkdir -p out
+          cp susfs4ksu/ksu_susfs/libs/x86_64/ksu_susfs out/susfs_x64
+          cp susfs4ksu/ksu_susfs/libs/arm64-v8a/ksu_susfs out/susfs_arm64
+          chmod 755 out/susfs_x64 out/susfs_arm64
+          ls -la out
+
+      - name: Upload CLI binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: susfs-cli-binaries
+          path: out/
+
+  susfs-lkm-mumu:
+    name: Build susfs_guard_lkm.ko matched to MuMu kernel (6.1.90-perf+, x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kernel build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm bc bison flex libelf-dev libssl-dev dwarves cpio kmod
+          clang --version | head -1
+
+      - name: Resolve android14-6.1 kernel tag for 6.1.90
+        id: ktag
+        run: |
+          set -euo pipefail
+          TAG=$(git ls-remote --tags "$KERNEL_REPO" "refs/tags/android14-6.1-${KERNEL_VERSION}_*" \
+            | sed 's/.*refs\/tags\///' | grep -v '\^{}' | sort -V | tail -1 || true)
+          if [ -n "$TAG" ]; then
+            echo "mode=tag" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "Resolved tag: $TAG"
+          else
+            echo "No android14-6.1-6.1.90_* tag found; will fall back to history scan."
+            echo "mode=scan" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch kernel source (tag path)
+        if: steps.ktag.outputs.mode == 'tag'
+        run: |
+          git clone --depth 1 -b "${{ steps.ktag.outputs.tag }}" "$KERNEL_REPO" kernel
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)' kernel/Makefile
+
+      - name: Fetch kernel source (history scan fallback)
+        if: steps.ktag.outputs.mode == 'scan'
+        run: |
+          git clone --filter=blob:none --no-checkout -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
+          cd kernel
+          for sha in $(git log --format=%H -- Makefile); do
+            v=$(git show "$sha":Makefile 2>/dev/null | awk '
+              /^VERSION =/    {v=$3}
+              /^PATCHLEVEL =/ {p=$3}
+              /^SUBLEVEL =/   {s=$3}
+              END {print v"."p"."s}')
+            if [ "$v" = "$KERNEL_VERSION" ]; then
+              echo "Found $KERNEL_VERSION at $sha"
+              git checkout "$sha"
+              break
+            fi
+          done
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)' Makefile
+          test "$(awk '/^SUBLEVEL =/ {print $3}' Makefile)" = "90"
+
+      - name: Apply MuMu kernel config and prepare tree
+        run: |
+          cd kernel
+          cp "$GITHUB_WORKSPACE/kernel-config/mumu_android15_6.1.90.config" .config
+          make ARCH=x86_64 LLVM=1 LLVM_IAS=1 olddefconfig
+          echo "--- sanity: options that decide LKM loadability ---"
+          for opt in CONFIG_MODULES CONFIG_MODULE_UNLOAD CONFIG_MODVERSIONS CONFIG_MODULE_SIG CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL CONFIG_DEBUG_LIST CONFIG_FORTIFY_SOURCE CONFIG_ANDROID_KABI_RESERVE CONFIG_KSU CONFIG_LOCALVERSION; do
+            grep -E "^${opt}[= ]" .config || echo "${opt} not set"
+          done
+          make ARCH=x86_64 LLVM=1 LLVM_IAS=1 -j"$(nproc)" modules_prepare
+
+      - name: Extract vendored susfs4ksu-for-lkm source
+        run: |
+          unzip -q vendor/susfs4ksu-for-lkm-2.3.0-r18.6.zip -d susfs-lkm
+          ls susfs-lkm/susfs4ksu-for-lkm-2.3.0-r18.6/kernel | head
+
+      - name: Build susfs_guard_lkm.ko (x86_64, MuMu config)
+        run: |
+          KDIR="$GITHUB_WORKSPACE/kernel"
+          MDIR="$GITHUB_WORKSPACE/susfs-lkm/susfs4ksu-for-lkm-2.3.0-r18.6/kernel"
+          make -k -C "$KDIR" M="$MDIR" ARCH=x86_64 CC=clang LLVM=1 LLVM_IAS=1 modules -j"$(nproc)"
+          ls -la "$MDIR"/*.ko
+
+      - name: Verify the built module
+        run: |
+          set -euo pipefail
+          KO="susfs-lkm/susfs4ksu-for-lkm-2.3.0-r18.6/kernel/susfs_guard_lkm.ko"
+          echo "vermagic: $(modinfo -F vermagic "$KO")"
+          case "$(modinfo -F vermagic "$KO")" in
+            *"SMP preempt mod_unload modversions"*) echo "vermagic flags OK (release part is ignored by MODVERSIONS kernels)" ;;
+            *) echo "::error::unexpected vermagic flags"; exit 1 ;;
+          esac
+          UNDEF=$(nm -u "$KO" | awk '{print $2}')
+          echo "undefined (imported) symbols: $(echo "$UNDEF" | wc -l)"
+          BAD=$(echo "$UNDEF" | grep -E '^(fortify_panic|__list_add_valid|__list_del_entry_valid)$' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::module imports symbols that do not exist in the MuMu kernel: $BAD (config mismatch?)"
+            exit 1
+          fi
+          file "$KO"
+
+      - name: Assemble flashable MuMu SuSFS LKM module zip
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          cp lkm-mumu/module.prop lkm-mumu/post-fs-data.sh lkm-mumu/service.sh lkm-mumu/uninstall.sh stage/
+          cp susfs-lkm/susfs4ksu-for-lkm-2.3.0-r18.6/kernel/susfs_guard_lkm.ko stage/susfs_guard_lkm_mumu.ko
+          cp vendor/susfs_cli_x64 stage/
+          chmod 755 stage/susfs_cli_x64
+          cd stage
+          zip -r ../susfs-lkm-mumu.zip .
+          cd ..
+          ls -la susfs-lkm-mumu.zip
+          unzip -l susfs-lkm-mumu.zip
+
+      - name: Upload MuMu LKM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: susfs-lkm-mumu
+          path: |
+            susfs-lkm-mumu.zip
+            susfs-lkm/susfs4ksu-for-lkm-2.3.0-r18.6/kernel/susfs_guard_lkm.ko
+
+  brene-module:
+    name: Package BRENE module zip (arm64 + x86_64)
+    runs-on: ubuntu-latest
+    needs: susfs-cli
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download built susfs CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: susfs-cli-binaries
+          path: cli-out
+
+      - name: Assemble module zip
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          cp -r module/. stage/
+          cp cli-out/susfs_x64 stage/tools/susfs_x64
+          chmod 755 stage/tools/susfs_x64 stage/tools/susfs
+          VER=$(grep '^version=' stage/module.prop | cut -d= -f2)
+          echo "Module version: $VER"
+          cd stage
+          zip -r "../BRENE-${VER}-x64.zip" .
+          cd ..
+          ls -la *.zip
+          unzip -l "BRENE-${VER}-x64.zip" | head -30
+          echo "zip_name=BRENE-${VER}-x64.zip" >> "$GITHUB_ENV"
+
+      - name: Upload BRENE module zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: brene-module-x64
+          path: BRENE-*-x64.zip
+
+  release:
+    name: Attach zips to GitHub release (tag pushes only)
+    runs-on: ubuntu-latest
+    needs: [susfs-cli, susfs-lkm-mumu, brene-module]
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
