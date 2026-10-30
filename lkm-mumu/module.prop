@@ -1,0 +1,6 @@
+id=susfs_lkm_mumu
+name=SusFS LKM for MuMu 6 (6.1.90-perf+)
+version=v0.0.7-mumu.1
+versionCode=1
+author=ymuuuu, inforcqb, simonpunk, SukiSU-Ultra; MuMu build by rami01e
+description=SuSFS loadable kernel module (x86_64) matched to the MuMu 6 Android 15 kernel (6.1.90-perf+, GKI android14-6.1 base, KernelSU 32525-2). Loads via ksud insmod with expose_proc=1 and installs the x86_64 susfs CLI to /data/adb/ksu/bin/susfs for manager modules such as BRENE. Port of inforcqb/susfs4ksu-for-lkm (GPL-2.0).
