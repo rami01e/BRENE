@@ -354,6 +354,23 @@ exec(`cat ${PERSISTENT_DIR}/config.sh`).then((result) => {
 		})
 	})
 
+	// Check Play Integrity API
+	document.getElementById('check_piapi').addEventListener('click', () => {
+		const PKG = 'gr.nikolasspyr.integritycheck'
+		exec(`cmd package path ${PKG}`).then((result) => {
+			const APP_URL = `https://play.google.com/store/apps/details?id=${PKG}`
+			if (result.stdout.includes('package:')) {
+				exec(`
+					am start ${PKG}/.MainActivity
+					input keyevent KEYCODE_TAB
+					input keyevent KEYCODE_ENTER
+				`)
+			} else {
+				exec(`am start -a android.intent.action.VIEW -d ${APP_URL}`)
+			}
+		})
+	})
+
 	// Reset Settings
 	const dialog = document.getElementById('dialog')
 	const openButton = document.getElementById('reset_settings')
