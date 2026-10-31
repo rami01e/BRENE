@@ -92,16 +92,21 @@ jobs:
   susfs-lkm-mumu:
     name: Build susfs_guard_lkm.ko matched to MuMu kernel (6.1.90-perf+, x86_64)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install kernel build toolchain
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang lld llvm bc bison flex libelf-dev libssl-dev dwarves cpio kmod
           clang --version | head -1
+          echo "Runner cores: $(nproc)"
+          echo "Memory:"
+          free -h || true
 
       - name: Resolve android14-6.1 kernel tag for 6.1.90
         id: ktag
@@ -121,14 +126,18 @@ jobs:
       - name: Fetch kernel source (tag path)
         if: steps.ktag.outputs.mode == 'tag'
         run: |
+          set -euo pipefail
           git clone --depth 1 -b "${{ steps.ktag.outputs.tag }}" "$KERNEL_REPO" kernel
+          echo "--- kernel Makefile version info ---"
           grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)' kernel/Makefile
 
       - name: Fetch kernel source (history scan fallback)
         if: steps.ktag.outputs.mode == 'scan'
         run: |
+          set -euo pipefail
           git clone --filter=blob:none --no-checkout -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
           cd kernel
+          FOUND=""
           for sha in $(git log --format=%H -- Makefile); do
             v=$(git show "$sha":Makefile 2>/dev/null | awk '
               /^VERSION =/    {v=$3}
@@ -138,39 +147,61 @@ jobs:
             if [ "$v" = "$KERNEL_VERSION" ]; then
               echo "Found $KERNEL_VERSION at $sha"
               git checkout "$sha"
+              FOUND="$sha"
               break
             fi
           done
+          if [ -z "$FOUND" ]; then
+            echo "::error::Could not locate kernel version $KERNEL_VERSION in history"
+            exit 1
+          fi
+          echo "--- kernel Makefile version info ---"
           grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)' Makefile
           test "$(awk '/^SUBLEVEL =/ {print $3}' Makefile)" = "90"
 
       - name: Apply MuMu kernel config and prepare tree
         run: |
+          set -euo pipefail
           cd kernel
           cp "$GITHUB_WORKSPACE/kernel-config/mumu_android15_6.1.90.config" .config
+          echo "--- applying olddefconfig ---"
           make ARCH=x86_64 LLVM=1 LLVM_IAS=1 olddefconfig
           echo "--- sanity: options that decide LKM loadability ---"
-          for opt in CONFIG_MODULES CONFIG_MODULE_UNLOAD CONFIG_MODVERSIONS CONFIG_MODULE_SIG CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL CONFIG_DEBUG_LIST CONFIG_FORTIFY_SOURCE CONFIG_ANDROID_KABI_RESERVE CONFIG_KSU CONFIG_LOCALVERSION; do
+          for opt in CONFIG_MODULES CONFIG_MODULE_UNLOAD CONFIG_MODVERSIONS CONFIG_MODULE_SIG CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL CONFIG_DEBUG_LIST CONFIG_FORTIFY_SOURCE CONFIG_ANDROID_KABI_RESER; do
             grep -E "^${opt}[= ]" .config || echo "${opt} not set"
           done
-          make ARCH=x86_64 LLVM=1 LLVM_IAS=1 -j"$(nproc)" modules_prepare
+          echo "--- running modules_prepare ---"
+          make ARCH=x86_64 LLVM=1 LLVM_IAS=1 -j4 modules_prepare
 
       - name: Extract vendored susfs4ksu-for-lkm source
         run: |
+          set -euo pipefail
           unzip -q vendor/susfs4ksu-for-lkm-2.3.0-r18.6.zip -d susfs-lkm
+          echo "--- extracted kernel dir ---"
           ls susfs-lkm/susfs4ksu-for-lkm-2.3.0-r18.6/kernel | head
 
       - name: Build susfs_guard_lkm.ko (x86_64, MuMu config)
         run: |
+          set -euo pipefail
           KDIR="$GITHUB_WORKSPACE/kernel"
           MDIR="$GITHUB_WORKSPACE/susfs-lkm/susfs4ksu-for-lkm-2.3.0-r18.6/kernel"
-          make -k -C "$KDIR" M="$MDIR" ARCH=x86_64 CC=clang LLVM=1 LLVM_IAS=1 modules -j"$(nproc)"
+          echo "Starting kernel module build..."
+          echo "KDIR=$KDIR"
+          echo "MDIR=$MDIR"
+          echo "Using -j4 to avoid runner OOM / slow hangs"
+          make -k -C "$KDIR" M="$MDIR" ARCH=x86_64 CC=clang LLVM=1 LLVM_IAS=1 modules -j4 2>&1 | tee "$RUNNER_TEMP/susfs_lkm_build.log"
+          echo "Build finished successfully"
           ls -la "$MDIR"/*.ko
 
       - name: Verify the built module
         run: |
           set -euo pipefail
           KO="susfs-lkm/susfs4ksu-for-lkm-2.3.0-r18.6/kernel/susfs_guard_lkm.ko"
+          if [ ! -f "$KO" ]; then
+            echo "::error::Expected module was not produced: $KO"
+            ls -la susfs-lkm/susfs4ksu-for-lkm-2.3.0-r18.6/kernel || true
+            exit 1
+          fi
           echo "vermagic: $(modinfo -F vermagic "$KO")"
           case "$(modinfo -F vermagic "$KO")" in
             *"SMP preempt mod_unload modversions"*) echo "vermagic flags OK (release part is ignored by MODVERSIONS kernels)" ;;
