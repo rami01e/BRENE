@@ -152,6 +152,24 @@ if [[ "${config_hide_sus_mnts_for_non_su_procs}" == "1" ]]; then
 	${SUSFS_BIN} hide_sus_mnts_for_non_su_procs 1
 fi
 
+# Load custom_mount_hide_prefixes.txt
+# Extra mount-source / mountpoint prefixes that the susfs mount marking should
+# treat as "ours" (LKM: /proc/susfs_hide_mounts). Needed for runtime bind
+# mounts made by Zygisk modules whose mountpoint is not under /data/adb, e.g.
+# zygisk_vector's /data/resource-cache (its mountinfo root shows up as
+# "/adb/modules/zygisk_vector/.resource-cache", which matches no default).
+if [[ -e "${PERSISTENT_DIR}/custom_mount_hide_prefixes.txt" ]]; then
+	while IFS= read -r i; do
+		# Skip empty lines or comments
+		[[ -z "${i// /}" || "${i// /}" == "#"* ]] && continue
+
+		if [[ "${config_brene_logs}" == "1" ]]; then
+			echo "[mount_hide_prefix]: ${i}" >> "${PERSISTENT_DIR}/logs.txt"
+		fi
+		echo "add ${i}" > /proc/susfs_hide_mounts 2>/dev/null
+	done < "${PERSISTENT_DIR}/custom_mount_hide_prefixes.txt"
+fi
+
 # Spoof Uname
 #### Spoof the uname, effective for all processes ####
 # you can get your uname args by running 'uname {-r|-v}' on your stock ROM #
@@ -187,6 +205,10 @@ if [[ "${config_spoof_uname}" == "1" ]]; then
 
 		brene_set_uname "${uname_kernel_release}" "${uname_kernel_version}"
 	fi
+
+	# Keep the /proc exports of the kernel identity consistent with the uname
+	# spoof (Duck-style cross-source checks compare them against the syscall).
+	brene_spoof_proc_identity "${uname_kernel_release}" "${uname_kernel_version}"
 fi
 
 # Custom Spoof Uname
@@ -201,6 +223,9 @@ if [[ "${config_custom_spoof_uname}" == "1" ]]; then
 	fi
 
 	brene_set_uname "${config_custom_uname_kernel_release}" "${config_custom_uname_kernel_version}"
+
+	# Keep the /proc exports consistent with the custom uname values too.
+	brene_spoof_proc_identity "${config_custom_uname_kernel_release}" "${config_custom_uname_kernel_version}"
 fi
 
 ## Disable susfs kernel log ##

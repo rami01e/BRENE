@@ -115,6 +115,20 @@ ${KSU_BIN} module config set override.description "[Status: ${status} | Kernel V
 echo "[✅] Preparing brene persistent directory (${PERSISTENT_DIR})"
 mkdir -p "${PERSISTENT_DIR}"
 
+# Mount-hide prefixes for the susfs mount marking (LKM: /proc/susfs_hide_mounts).
+# Seeded with the mountpoint that Zygisk modules such as zygisk_vector bind
+# their resource cache to on x86_64 emulators; its mountinfo root shows as
+# "/adb/modules/..." and matches none of the built-in prefixes. One prefix
+# per line; '#' starts a comment.
+if [[ ! -f "${PERSISTENT_DIR}/custom_mount_hide_prefixes.txt" ]]; then
+	printf '%s\n' \
+		'# Extra mount-source / mountpoint prefixes susfs should treat as "ours"' \
+		'# and hide from non-su processes. One prefix per line.' \
+		'/data/resource-cache' \
+		> "${PERSISTENT_DIR}/custom_mount_hide_prefixes.txt"
+	echo '[✅] Added custom_mount_hide_prefixes.txt'
+fi
+
 # Backup SuSFS binary (whichever CLI is live on this device)
 cp -pf "${DEST_BIN_DIR}/susfs" "${PERSISTENT_DIR}"
 
