@@ -1,5 +1,11 @@
 #!/bin/bash
 # shellcheck disable=SC2154
+# X64 PORT NOTE (rami01e fork):
+#  - susfs probes are silenced when the kernel interface is down.
+#  - 'set_priority_uid_filter' is part of susfs v2.3+ in-kernel builds but is
+#    NOT implemented by the susfs_guard_lkm supercall CLI used on x86_64
+#    emulators; the call is made best-effort so the script keeps working on
+#    both kernel types.
 MODDIR=${0%/*}
 KSU_BIN=/data/adb/ksud
 KSU_MODULES_DIR=/data/adb/modules
@@ -17,8 +23,8 @@ update_config_date
 
 # Update Description
 susfs_total_features=9
-susfs_version=$(${SUSFS_BIN} show version)
-susfs_features_number=$(${SUSFS_BIN} show enabled_features | wc -l)
+susfs_version=$(${SUSFS_BIN} show version 2>/dev/null)
+susfs_features_number=$(${SUSFS_BIN} show enabled_features 2>/dev/null | wc -l)
 kernel_version=$(cat /proc/version | awk '{print $3}' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
 description="KernelSU module with SuSFS support and more"
 if [[ "${susfs_version}" == "v2"* ]]; then
@@ -26,7 +32,7 @@ if [[ "${susfs_version}" == "v2"* ]]; then
 	${KSU_BIN} module config set override.description "[Status: ${status} | Kernel Version: ${kernel_version} | SuSFS: ${susfs_version} | SuSFS Kernel Features: ${susfs_features_number}/${susfs_total_features} enabled] ${description}"
 else
 	status="Not Working ❌"
-	${KSU_BIN} module config set override.description "[Status: ${status} | Kernel Version: ${kernel_version} | SuSFS: ${susfs_version} | SuSFS Kernel Features: ${susfs_features_number}/${susfs_total_features} enabled] ${description}"
+	${KSU_BIN} module config set override.description "[Status: ${status} | Kernel Version: ${kernel_version} | SuSFS: ${susfs_version:-none} | SuSFS Kernel Features: ${susfs_features_number}/${susfs_total_features} enabled] ${description}"
 fi
 
 # SU Compat
@@ -192,7 +198,6 @@ fi
 ## Remove the '..5.u.S' leftover ##
 ## THe reason why this sus file is created is because users have grant the MANAGE_EXTERNAL_STORAGE permission for the apps that detecting sus files in /storage/emulated/0, or in /storage/emulated/0/Android/data where the apps are exploiting the unicode bugs to create files arbitrary.
 ## susfs redirects the sus path to a supposed not-existing path named '..5.u.S', and this is the only way to settle the cross check of returned errno from various syscalls, but one disadvantage is that if the path itself can be written/created by the app (MANAGE_EXTERNAL_STORAGE granted), then it is futile to hide it, but at least here we automatically delete them on each boot.
-## The best practise is to revoke MANAGE_EXTERNAL_STORAGE permission for all third party apps.
 # [ -e "/storage/emulated/0/..5.u.S" ] && rm -rf "/storage/emulated/0/..5.u.S"
 # [ -e "/storage/emulated/0/Android/data/..5.u.S" ] && rm -rf "/storage/emulated/0/Android/data/..5.u.S"
 # [ -e "/storage/emulated/0/Android/media/..5.u.S" ] && rm -rf "/storage/emulated/0/Android/media/..5.u.S"
@@ -372,19 +377,19 @@ fi
 ## - To debug the namespace issue, users can do this in a root shell:
 ##   1. Find the pid and uid of a opened umounted app by running
 ##      ps -enf | grep myapp
-##   2. cat /proc/<pid_of_myapp>/maps | grep "<added/sus_map/path>"'
+##   2. cat /proc/<pid>/maps | grep <path>
 ##   3. In other root shell, run
-##      cat /proc/1/mountinfo | grep "<added/sus_map/path>"'
+##      cat /proc/<pid>/mountinfo | grep <path>
 ##   4. Finally compare the dev number with both output and see if they are consistent,
 ##      if so, then it should be working, but if not, then the added sus_map path
 ##      is probably not working, and you have to find out which mnt ns the dev number
 ##      from step 2 belongs to, and add the path from that mnt ns:
-##         busybox nsenter -t <pid_of_mnt_ns_the_target_dev_number_belongs_to> -m ksu_susfs add_sus_map <target_path>
+##         busybox nsenter -t <pid> -m ksu_susfs add_sus_map <path>
 ## Hide some zygisk modules ##
 # brene_sus_map /data/adb/modules/my_module/zygisk/arm64-v8a.so
 
 #### Adding sus mounts to umount list via built-in KernelSU kernel umount (not via add_try_umount from old susfs) ####
-# cat <<EOF >/dev/null
+# cat </dev/null
 # ## Don't forget to notify KernelSU that all ksu modules all mounted and ready ##
 # /data/adb/ksu/bin/ksud kernel notify-module-mounted
 
@@ -414,16 +419,17 @@ if [[ "${config_fix_data_local_tmp_inconsistencies}" == "1" ]]; then
 	chmod 0771 "${target_folder}"
 	chown shell:shell "${target_folder}"
 	chcon u:object_r:shell_data_file:s0 "${target_folder}"
-	# add_sus_kstat_statically </path/of/file_or_directory> <ino> <dev> <nlink> <size> <atime> <atime_nsec> <mtime> <mtime_nsec> <ctime> <ctime_nsec> <blocks> <blksize>
+	# add_sus_kstat_statically
 	# ino -> %i, dev -> %d, nlink -> %h, atime -> %X, mtime -> %Y, ctime -> %Z, size -> %s, blocks -> %b, blksize -> %B
-	# Example: stat -c %i <path>
+	# Example: stat -c %i
 	${SUSFS_BIN} add_sus_kstat_statically "${target_folder}" '100' 'default' 'default' '4096' 'default' 'default' 'default' 'default' 'default' 'default' '8' '4096'
 fi
 
 # Hide third party apps
 if [[ "${config_hide_third_party_apps}" == "1" ]]; then
 	packages=$(cmd package list packages -3 | awk -F: '{out = out (out ? "," : "") $2} END {print out}')
-	${SUSFS_BIN} set_priority_uid_filter "${packages}"
+	# Best-effort: not implemented by the susfs_guard_lkm CLI on x64 emulators.
+	${SUSFS_BIN} set_priority_uid_filter "${packages}" 2>/dev/null
 fi
 
 resetprop -c --force

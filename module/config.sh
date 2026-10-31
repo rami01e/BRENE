@@ -6,6 +6,7 @@ config_paths_hiding__non_standard_sdcard_android=1
 
 config_su_compat=1
 config_spoof_uname=1
+config_spoof_proc_identity=1
 config_selinux_hide=1
 config_kernel_umount=1
 config_shrink_buffer_size=1
