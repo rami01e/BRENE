@@ -15,3 +15,4 @@ remove_directory() {
 
 remove_directory "me.weishu.kernelsu"
 remove_directory "com.rifsxd.ksunext"
+remove_directory "org.frknkrc44.hma_oss"

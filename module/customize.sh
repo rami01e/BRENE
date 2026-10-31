@@ -49,11 +49,11 @@ case "${ARCH}" in
 		;;
 esac
 
-if [[ "${KSU_KERNEL_VER_CODE}" -ge 32336 ]]; then
-	echo "[✅] Detected KernelSU kernel version: ${KSU_KERNEL_VER_CODE}"
-else
-	abort "[❌] Unsupported KernelSU kernel version: ${KSU_KERNEL_VER_CODE}!"
-fi
+# if [[ "${KSU_KERNEL_VER_CODE}" -ge 32336 ]]; then
+# 	echo "[✅] Detected KernelSU kernel version: ${KSU_KERNEL_VER_CODE}"
+# else
+# 	abort "[❌] Unsupported KernelSU kernel version: ${KSU_KERNEL_VER_CODE}!"
+# fi
 
 if [[ ! -d "${DEST_BIN_DIR}" ]]; then
 	abort "[❌] '${DEST_BIN_DIR}' not existed, installation aborted!"
@@ -84,7 +84,8 @@ chmod 755 "${DEST_BIN_DIR}/susfs"
 ln -sf "${DEST_BIN_DIR}/susfs" "${DEST_BIN_DIR}/sus"       # For development
 ln -sf "${DEST_BIN_DIR}/susfs" "${DEST_BIN_DIR}/ksu_susfs" # For compatibility
 
-if [[ "${susfs_version}" == "v2"* ]]; then
+susfs_version=$(${SUSFS_BIN} show version)
+if [[ "${susfs_version}" == "v2.4.0" || "${susfs_version}" == "v2.3.0" || "${susfs_version}" == "v2.2.0" ]]; then
 	echo "[✅] Detected SuSFS version: ${susfs_version}"
 else
 	# Do not hard-abort here anymore: on x86_64 emulators the susfs kernel
@@ -110,6 +111,9 @@ ${KSU_BIN} module config set override.description "[Status: ${status} | Kernel V
 }
 [[ -e "${KSU_MODULES_DIR}/susfs_manager" ]] && {
 	touch "${KSU_MODULES_DIR}/susfs_manager/disable" && echo '[✅] Disabling other SuSFS module'
+}
+[[ -e "${KSU_MODULES_DIR}/ReSuSFS" ]] && {
+	touch "${KSU_MODULES_DIR}/ReSuSFS/disable" && echo '[✅] Disabling other SuSFS module'
 }
 
 echo "[✅] Preparing brene persistent directory (${PERSISTENT_DIR})"
