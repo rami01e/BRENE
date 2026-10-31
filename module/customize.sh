@@ -45,7 +45,7 @@ ln -sf "${DEST_BIN_DIR}/susfs" "${DEST_BIN_DIR}/sus"       # For development
 ln -sf "${DEST_BIN_DIR}/susfs" "${DEST_BIN_DIR}/ksu_susfs" # For compatibility
 
 susfs_version=$(${SUSFS_BIN} show version)
-if [[ "${susfs_version}" == "v2"* ]]; then
+if [[ "${susfs_version}" == "v2.4.0" || "${susfs_version}" == "v2.3.0" || "${susfs_version}" == "v2.2.0" ]]; then
 	echo "[✅] Detected SuSFS version: ${susfs_version}"
 else
 	abort "[❌] Not supported SuSFS version ${susfs_version}!"
