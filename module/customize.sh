@@ -27,11 +27,11 @@ if [[ "${ARCH}" != "arm64" ]]; then
 	abort '[❌] Only arm64 is supported!'
 fi
 
-if [[ "${KSU_KERNEL_VER_CODE}" -ge 32336 ]]; then
-	echo "[✅] Detected KernelSU kernel version: ${KSU_KERNEL_VER_CODE}"
-else
-	abort "[❌] Unsupported KernelSU kernel version: ${KSU_KERNEL_VER_CODE}!"
-fi
+# if [[ "${KSU_KERNEL_VER_CODE}" -ge 32336 ]]; then
+# 	echo "[✅] Detected KernelSU kernel version: ${KSU_KERNEL_VER_CODE}"
+# else
+# 	abort "[❌] Unsupported KernelSU kernel version: ${KSU_KERNEL_VER_CODE}!"
+# fi
 
 if [[ ! -d "${DEST_BIN_DIR}" ]]; then
 	abort "[❌] '${DEST_BIN_DIR}' not existed, installation aborted!"
