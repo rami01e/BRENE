@@ -66,6 +66,9 @@ ${KSU_BIN} module config set override.description "[Status: ${status} | Kernel V
 [[ -e "${KSU_MODULES_DIR}/susfs_manager" ]] && {
 	touch "${KSU_MODULES_DIR}/susfs_manager/disable" && echo '[✅] Disabling other SuSFS module'
 }
+[[ -e "${KSU_MODULES_DIR}/ReSuSFS" ]] && {
+	touch "${KSU_MODULES_DIR}/ReSuSFS/disable" && echo '[✅] Disabling other SuSFS module'
+}
 
 echo "[✅] Preparing brene persistent directory (${PERSISTENT_DIR})"
 mkdir -p "${PERSISTENT_DIR}"
