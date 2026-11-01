@@ -213,15 +213,23 @@ exec('ksud module list').then((result) => {
 	const moduleIds = modules.map((mod) => mod.id)
 	const cardRows = container.querySelectorAll('.card-row')
 
-	cardRows.forEach((row) => {
+	for (const row of cardRows) {
 		const moduleKey = row.getAttribute('data-module')
 		const statusSpan = row.querySelector('.status-text')
+
+		if (moduleKey === 'playintegrityfix') {
+			if (result.stdout.includes('Integrity-Box')) {
+				statusSpan.innerText = 'Status: Installed'
+				statusSpan.style.color = '#ff0000be'
+			}
+			continue
+		}
 
 		if (moduleIds.includes(moduleKey)) {
 			statusSpan.innerText = 'Status: Installed'
 			statusSpan.style.color = '#ff0000be'
 		}
-	})
+	}
 })
 
 // Load enabled features
