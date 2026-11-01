@@ -213,15 +213,23 @@ exec('ksud module list').then((result) => {
 	const moduleIds = modules.map((mod) => mod.id)
 	const cardRows = container.querySelectorAll('.card-row')
 
-	cardRows.forEach((row) => {
+	for (const row of cardRows) {
 		const moduleKey = row.getAttribute('data-module')
 		const statusSpan = row.querySelector('.status-text')
+
+		if (moduleKey === 'playintegrityfix') {
+			if (result.stdout.includes('Integrity-Box')) {
+				statusSpan.innerText = 'Status: Installed'
+				statusSpan.style.color = '#ff0000be'
+			}
+			continue
+		}
 
 		if (moduleIds.includes(moduleKey)) {
 			statusSpan.innerText = 'Status: Installed'
 			statusSpan.style.color = '#ff0000be'
 		}
-	})
+	}
 })
 
 // Load enabled features
@@ -351,6 +359,23 @@ exec(`cat ${PERSISTENT_DIR}/config.sh`).then((result) => {
 			const newConfigValue = +enabled
 			updateConfig(configId, newConfigValue)
 			if (config.action) config.action(enabled)
+		})
+	})
+
+	// Check Play Integrity API
+	document.getElementById('check_piapi').addEventListener('click', () => {
+		const PKG = 'gr.nikolasspyr.integritycheck'
+		exec(`cmd package path ${PKG}`).then((result) => {
+			const APP_URL = `https://play.google.com/store/apps/details?id=${PKG}`
+			if (result.stdout.includes('package:')) {
+				exec(`
+					am start ${PKG}/.MainActivity
+					input keyevent KEYCODE_TAB
+					input keyevent KEYCODE_ENTER
+				`)
+			} else {
+				exec(`am start -a android.intent.action.VIEW -d ${APP_URL}`)
+			}
 		})
 	})
 
